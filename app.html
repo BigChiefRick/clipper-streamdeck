@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Simple Twitch Clipper</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
+            background: #2d2d30;
+            color: #cccccc;
+        }
+        
+        .sdpi-wrapper {
+            max-width: 100%;
+        }
+        
+        .sdpi-heading {
+            color: #ffffff;
+            font-weight: 600;
+            margin: 16px 0 8px 0;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #3e3e42;
+        }
+        
+        .sdpi-item {
+            margin-bottom: 12px;
+        }
+        
+        .sdpi-item-label {
+            margin-bottom: 4px;
+            color: #cccccc;
+            font-size: 13px;
+        }
+        
+        .sdpi-item-value {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            background: #1e1e1e;
+            color: #cccccc;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+        
+        .sdpi-item-value:focus {
+            outline: none;
+            border-color: #007acc;
+        }
+        
+        .status-success {
+            background: #4caf50;
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        
+        .status-error {
+            background: #f44336;
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="sdpi-wrapper">
+        <div class="sdpi-heading">Twitch Settings</div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Channel Name</div>
+            <input class="sdpi-item-value" type="text" id="twitchChannel" placeholder="your_channel_name">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">User Access Token</div>
+            <input class="sdpi-item-value" type="password" id="twitchToken" placeholder="Get from Twitch CLI or manual method">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Client ID</div>
+            <input class="sdpi-item-value" type="text" id="twitchClientId" placeholder="your_client_id">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Instructions</div>
+            <div style="background: #3e3e42; padding: 12px; border-radius: 4px; font-size: 12px;">
+                <strong>To get User Access Token:</strong><br>
+                1. Install Twitch CLI: <a href="https://dev.twitch.tv/docs/cli" style="color: #9146ff;">dev.twitch.tv/docs/cli</a><br>
+                2. Run: <code style="background: #1e1e1e; padding: 2px 4px;">twitch token -u -s clips:edit user:write:chat</code><br>
+                3. Copy the access token and paste above<br>
+                <br>
+                <strong>Note:</strong> For chat posting, you need:<br>
+                • Verified phone number on Twitch<br>
+                • Moderator status in your own channel
+            </div>
+        </div>
+        
+        <div class="sdpi-heading">YouTube Live Chat</div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Client ID</div>
+            <input class="sdpi-item-value" type="text" id="youtubeClientId" placeholder="YouTube OAuth Client ID">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Client Secret</div>
+            <input class="sdpi-item-value" type="password" id="youtubeClientSecret" placeholder="YouTube OAuth Client Secret">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Generate Auth URL</div>
+            <button class="sdpi-item-value" onclick="generateYouTubeUrl()">Generate</button>
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Auth URL (copy to browser)</div>
+            <input class="sdpi-item-value" type="text" id="youtubeAuthUrl" readonly placeholder="Click Generate button first">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Auth Code (from redirect URL)</div>
+            <input class="sdpi-item-value" type="text" id="youtubeAuthCode" placeholder="paste code from browser">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Exchange for Token</div>
+            <button class="sdpi-item-value" onclick="exchangeYouTubeToken()">Exchange</button>
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">OAuth Token</div>
+            <input class="sdpi-item-value" type="password" id="youtubeToken" readonly placeholder="Generated after exchange">
+        </div>
+        
+        <div class="sdpi-item">
+            <div class="sdpi-item-label">Target Channel ID (optional)</div>
+            <input class="sdpi-item-value" type="text" id="youtubeChannelId" placeholder="Leave blank for your own channel">
+        </div>
+        
+        <div id="statusMessage" style="display: none;"></div>
+    </div>
+
+    <script>
+        let websocket = null;
+        let uuid = null;
+
+        function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
+            uuid = inUUID;
+            
+            websocket = new WebSocket('ws://127.0.0.1:' + inPort);
+            
+            websocket.onopen = function() {
+                const json = {
+                    event: inRegisterEvent,
+                    uuid: inUUID
+                };
+                websocket.send(JSON.stringify(json));
+                requestSettings();
+            };
+            
+            websocket.onmessage = function(evt) {
+                const jsonObj = JSON.parse(evt.data);
+                if (jsonObj.event === 'didReceiveSettings') {
+                    const settings = jsonObj.payload.settings;
+                    loadSettings(settings);
+                }
+            };
+        }
+
+        function requestSettings() {
+            if (websocket) {
+                const json = {
+                    event: 'getSettings',
+                    context: uuid
+                };
+                websocket.send(JSON.stringify(json));
+            }
+        }
+
+        function saveSettings() {
+            const settings = {
+                twitchChannel: document.getElementById('twitchChannel').value,
+                twitchToken: document.getElementById('twitchToken').value,
+                twitchClientId: document.getElementById('twitchClientId').value,
+                youtubeClientId: document.getElementById('youtubeClientId').value,
+                youtubeClientSecret: document.getElementById('youtubeClientSecret').value,
+                youtubeAuthCode: document.getElementById('youtubeAuthCode').value,
+                youtubeToken: document.getElementById('youtubeToken').value,
+                youtubeChannelId: document.getElementById('youtubeChannelId').value
+            };
+            
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                const json = {
+                    event: 'setSettings',
+                    context: uuid,
+                    payload: settings
+                };
+                websocket.send(JSON.stringify(json));
+            }
+        }
+
+        function loadSettings(settings) {
+            document.getElementById('twitchChannel').value = settings.twitchChannel || '';
+            document.getElementById('twitchToken').value = settings.twitchToken || '';
+            document.getElementById('twitchClientId').value = settings.twitchClientId || '';
+            document.getElementById('youtubeClientId').value = settings.youtubeClientId || '';
+            document.getElementById('youtubeClientSecret').value = settings.youtubeClientSecret || '';
+            document.getElementById('youtubeAuthCode').value = settings.youtubeAuthCode || '';
+            document.getElementById('youtubeToken').value = settings.youtubeToken || '';
+            document.getElementById('youtubeChannelId').value = settings.youtubeChannelId || '';
+        }
+
+        function generateYouTubeUrl() {
+            const clientId = document.getElementById('youtubeClientId').value;
+            if (!clientId) {
+                alert('Enter Client ID first');
+                return;
+            }
+            
+            const authUrl = `https://accounts.google.com/o/oauth2/auth?client_id=${clientId}&redirect_uri=http://localhost:8080&response_type=code&scope=https://www.googleapis.com/auth/youtube&access_type=offline`;
+            document.getElementById('youtubeAuthUrl').value = authUrl;
+        }
+
+        async function exchangeYouTubeToken() {
+            const clientId = document.getElementById('youtubeClientId').value;
+            const clientSecret = document.getElementById('youtubeClientSecret').value;
+            const code = document.getElementById('youtubeAuthCode').value;
+            
+            if (!clientId || !clientSecret || !code) {
+                alert('Fill in Client ID, Secret, and Auth Code first');
+                return;
+            }
+            
+            try {
+                const response = await fetch('https://oauth2.googleapis.com/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: new URLSearchParams({
+                        client_id: clientId,
+                        client_secret: clientSecret,
+                        code: code,
+                        grant_type: 'authorization_code',
+                        redirect_uri: 'http://localhost:8080'
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    alert(`Token exchange failed: ${response.status} - ${errorText}`);
+                    return;
+                }
+                
+                const tokenData = await response.json();
+                document.getElementById('youtubeToken').value = tokenData.access_token;
+                saveSettings();
+                
+                alert('YouTube OAuth token generated successfully!');
+                
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        async function getChannelList() {
+            const token = document.getElementById('youtubeToken').value;
+            if (!token) {
+                alert('Generate OAuth token first');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&access_token=${token}`);
+                const data = await response.json();
+                
+                if (data.items && data.items.length > 0) {
+                    let channelList = 'Your channels:\n\n';
+                    data.items.forEach(channel => {
+                        channelList += `${channel.snippet.title}: ${channel.id}\n`;
+                    });
+                    channelList += '\nCopy the Channel ID for the one you want to post to.';
+                    alert(channelList);
+                } else {
+                    alert('No channels found or token expired');
+                }
+            } catch (error) {
+                alert(`Error getting channels: ${error.message}`);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputs = ['twitchChannel', 'twitchToken', 'twitchClientId', 'youtubeClientId', 'youtubeClientSecret', 'youtubeAuthCode', 'youtubeToken', 'youtubeChannelId'];
+            inputs.forEach(id => {
+                const element = document.getElementById(id);
+                if (element && !element.hasAttribute('readonly')) {
+                    element.addEventListener('input', saveSettings);
+                    element.addEventListener('change', saveSettings);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

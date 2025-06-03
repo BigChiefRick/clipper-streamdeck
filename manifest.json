@@ -1,0 +1,38 @@
+{
+  "Actions": [
+    {
+      "Name": "Create Twitch Clip",
+      "States": [
+        {
+          "Image": "Images/actionDefaultImage",
+          "TitleAlignment": "middle",
+          "FontSize": "16"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Create a Twitch clip and post to Restream chat",
+      "UUID": "com.twitchclipper.action"
+    }
+  ],
+  "SDKVersion": 2,
+  "Author": "TwitchClipper",
+  "CodePath": "index.html",
+  "Description": "Create Twitch clips and post to Restream unified chat with one click",
+  "Name": "Twitch Clipper",
+  "Icon": "Images/pluginIcon",
+  "PropertyInspectorPath": "app.html",
+  "Version": "1.0.0",
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.11"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "4.1"
+  }
+}

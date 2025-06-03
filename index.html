@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Simple Twitch Clipper</title>
+</head>
+<body>
+    <script>
+        let websocket = null;
+        let pluginUUID = null;
+
+        function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, inInfo) {
+            pluginUUID = inPluginUUID;
+            
+            websocket = new WebSocket('ws://127.0.0.1:' + inPort);
+            
+            websocket.onopen = function() {
+                const json = {
+                    event: inRegisterEvent,
+                    uuid: inPluginUUID
+                };
+                websocket.send(JSON.stringify(json));
+            };
+            
+            websocket.onmessage = function(evt) {
+                const jsonObj = JSON.parse(evt.data);
+                
+                if (jsonObj.event === 'keyDown') {
+                    createClip(jsonObj.context, jsonObj.payload.settings);
+                }
+            };
+        }
+
+        async function createClip(context, settings) {
+            try {
+                setTitle(context, 'Start');
+                
+                // Basic validation
+                if (!settings.twitchChannel || !settings.twitchToken || !settings.twitchClientId) {
+                    setTitle(context, 'No Config');
+                    console.log('Settings received:', settings);
+                    return;
+                }
+                
+                // Get broadcaster ID
+                setTitle(context, 'Get ID');
+                const userResponse = await fetch(`https://api.twitch.tv/helix/users?login=${settings.twitchChannel}`, {
+                    headers: {
+                        'Authorization': `Bearer ${settings.twitchToken}`,
+                        'Client-Id': settings.twitchClientId
+                    }
+                });
+                
+                if (!userResponse.ok) {
+                    setTitle(context, `U${userResponse.status}`);
+                    return;
+                }
+                
+                const userData = await userResponse.json();
+                if (!userData.data || userData.data.length === 0) {
+                    setTitle(context, 'No User');
+                    return;
+                }
+                
+                const broadcasterId = userData.data[0].id;
+                
+                // Create clip
+                setTitle(context, 'Clip');
+                const clipResponse = await fetch('https://api.twitch.tv/helix/clips', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${settings.twitchToken}`,
+                        'Client-Id': settings.twitchClientId,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        broadcaster_id: broadcasterId,
+                        has_delay: false
+                    })
+                });
+                
+                if (!clipResponse.ok) {
+                    setTitle(context, `C${clipResponse.status}`);
+                    return;
+                }
+                
+                const clipData = await clipResponse.json();
+                const clipId = clipData.data[0].id;
+                
+                // Wait for clip to process
+                setTitle(context, 'Wait');
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                // Get clip URL
+                setTitle(context, 'URL');
+                const clipDetailsResponse = await fetch(`https://api.twitch.tv/helix/clips?id=${clipId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${settings.twitchToken}`,
+                        'Client-Id': settings.twitchClientId
+                    }
+                });
+                
+                const clipDetails = await clipDetailsResponse.json();
+                const clipUrl = clipDetails.data[0].url;
+                
+                // Post to Twitch chat first
+                setTitle(context, 'TW Chat');
+                try {
+                    const twitchChatResponse = await fetch('https://api.twitch.tv/helix/chat/messages', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${settings.twitchToken}`,
+                            'Client-Id': settings.twitchClientId,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            broadcaster_id: broadcasterId,
+                            sender_id: broadcasterId,
+                            message: `${clipUrl}`
+                        })
+                    });
+                    
+                    if (!twitchChatResponse.ok) {
+                        setTitle(context, `TW ${twitchChatResponse.status}`);
+                        setTimeout(() => setTitle(context, ''), 5000);
+                        // Continue to YouTube even if Twitch chat fails
+                    }
+                } catch (error) {
+                    // Continue to YouTube even if Twitch chat fails
+                }
+                
+                // Post to YouTube Live Chat
+                if (settings.youtubeToken) {
+                    setTitle(context, 'YT Chat');
+                    
+                    try {
+                        // First, get the active live chat ID for the specified channel
+                        let broadcastUrl = `https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&broadcastStatus=active&access_token=${settings.youtubeToken}`;
+                        
+                        // If specific channel ID is provided, filter by that channel
+                        if (settings.youtubeChannelId) {
+                            broadcastUrl += `&channelId=${settings.youtubeChannelId}`;
+                        }
+                        
+                        const broadcastResponse = await fetch(broadcastUrl);
+                        
+                        if (!broadcastResponse.ok) {
+                            setTitle(context, `YT ${broadcastResponse.status}`);
+                            setTimeout(() => setTitle(context, ''), 10000);
+                            return;
+                        }
+                        
+                        const broadcastData = await broadcastResponse.json();
+                        if (!broadcastData.items || broadcastData.items.length === 0) {
+                            setTitle(context, 'No YT Live');
+                            setTimeout(() => setTitle(context, ''), 5000);
+                            return;
+                        }
+                        
+                        const liveChatId = broadcastData.items[0].snippet.liveChatId;
+                        
+                        // Post message to YouTube chat
+                        const chatResponse = await fetch(`https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet&access_token=${settings.youtubeToken}`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                snippet: {
+                                    liveChatId: liveChatId,
+                                    type: 'textMessageEvent',
+                                    textMessageDetails: {
+                                        messageText: `${clipUrl}`
+                                    }
+                                }
+                            })
+                        });
+                        
+                        if (!chatResponse.ok) {
+                            setTitle(context, `YT CH ${chatResponse.status}`);
+                            setTimeout(() => setTitle(context, ''), 10000);
+                            return;
+                        }
+                        
+                        setTitle(context, 'All Posted!');
+                        setTimeout(() => setTitle(context, ''), 3000);
+                        
+                    } catch (error) {
+                        setTitle(context, 'YT Err');
+                        setTimeout(() => setTitle(context, ''), 10000);
+                    }
+                } else {
+                    setTitle(context, 'TW Posted!');
+                    setTimeout(() => setTitle(context, ''), 3000);
+                }
+                
+            } catch (error) {
+                setTitle(context, 'Error');
+                setTimeout(() => setTitle(context, ''), 3000);
+            }
+        }
+
+        function setTitle(context, title) {
+            if (websocket) {
+                const json = {
+                    event: 'setTitle',
+                    context: context,
+                    payload: {
+                        title: title,
+                        target: 0
+                    }
+                };
+                websocket.send(JSON.stringify(json));
+            }
+        }
+    </script>
+</body>
+</html>
