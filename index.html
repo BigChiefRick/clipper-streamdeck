@@ -31,6 +31,78 @@
             };
         }
 
+        async function refreshYouTubeToken(settings) {
+            if (!settings.youtubeRefreshToken || !settings.youtubeClientId || !settings.youtubeClientSecret) {
+                return null;
+            }
+            
+            try {
+                const response = await fetch('https://oauth2.googleapis.com/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: new URLSearchParams({
+                        client_id: settings.youtubeClientId,
+                        client_secret: settings.youtubeClientSecret,
+                        refresh_token: settings.youtubeRefreshToken,
+                        grant_type: 'refresh_token'
+                    })
+                });
+                
+                if (!response.ok) {
+                    console.log('Token refresh failed:', response.status);
+                    return null;
+                }
+                
+                const tokenData = await response.json();
+                
+                // Update settings with new token
+                const newSettings = {
+                    ...settings,
+                    youtubeToken: tokenData.access_token,
+                    youtubeTokenExpiry: new Date(Date.now() + (tokenData.expires_in * 1000)).toISOString()
+                };
+                
+                // Save updated settings
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    const json = {
+                        event: 'setSettings',
+                        context: pluginUUID,
+                        payload: newSettings
+                    };
+                    websocket.send(JSON.stringify(json));
+                }
+                
+                return tokenData.access_token;
+                
+            } catch (error) {
+                console.log('Error refreshing token:', error);
+                return null;
+            }
+        }
+
+        async function getValidYouTubeToken(settings) {
+            // Check if token exists
+            if (!settings.youtubeToken) {
+                return null;
+            }
+            
+            // Check if token has expired (with 5 minute buffer)
+            if (settings.youtubeTokenExpiry) {
+                const expiryTime = new Date(settings.youtubeTokenExpiry);
+                const bufferTime = new Date(Date.now() + (5 * 60 * 1000)); // 5 minutes from now
+                
+                if (expiryTime <= bufferTime) {
+                    console.log('Token expired, refreshing...');
+                    const newToken = await refreshYouTubeToken(settings);
+                    return newToken || settings.youtubeToken;
+                }
+            }
+            
+            return settings.youtubeToken;
+        }
+
         async function createClip(context, settings) {
             try {
                 setTitle(context, 'Start');
@@ -42,8 +114,30 @@
                     return;
                 }
                 
+                // Get your own user ID first (the token holder)
+                setTitle(context, 'Get Auth User');
+                const authUserResponse = await fetch('https://api.twitch.tv/helix/users', {
+                    headers: {
+                        'Authorization': `Bearer ${settings.twitchToken}`,
+                        'Client-Id': settings.twitchClientId
+                    }
+                });
+                
+                if (!authUserResponse.ok) {
+                    setTitle(context, `Auth ${authUserResponse.status}`);
+                    return;
+                }
+                
+                const authUserData = await authUserResponse.json();
+                if (!authUserData.data || authUserData.data.length === 0) {
+                    setTitle(context, 'No Auth User');
+                    return;
+                }
+                
+                const senderId = authUserData.data[0].id;
+                
                 // Get broadcaster ID
-                setTitle(context, 'Get ID');
+                setTitle(context, 'Get Broadcaster');
                 const userResponse = await fetch(`https://api.twitch.tv/helix/users?login=${settings.twitchChannel}`, {
                     headers: {
                         'Authorization': `Bearer ${settings.twitchToken}`,
@@ -103,7 +197,7 @@
                 const clipDetails = await clipDetailsResponse.json();
                 const clipUrl = clipDetails.data[0].url;
                 
-                // Post to Twitch chat first
+                // Post to Twitch chat - using YOUR ID as sender, broadcaster ID as target
                 setTitle(context, 'TW Chat');
                 try {
                     const twitchChatResponse = await fetch('https://api.twitch.tv/helix/chat/messages', {
@@ -115,8 +209,8 @@
                         },
                         body: JSON.stringify({
                             broadcaster_id: broadcasterId,
-                            sender_id: broadcasterId,
-                            message: `${clipUrl}`
+                            sender_id: senderId,
+                            message: clipUrl
                         })
                     });
                     
@@ -130,64 +224,81 @@
                 }
                 
                 // Post to YouTube Live Chat
-                if (settings.youtubeToken) {
-                    setTitle(context, 'YT Chat');
+                if (settings.youtubeChannelId) {
+                    setTitle(context, 'YT Check Token');
                     
-                    try {
-                        // First, get the active live chat ID for the specified channel
-                        let broadcastUrl = `https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet&broadcastStatus=active&access_token=${settings.youtubeToken}`;
+                    // Get valid YouTube token (refreshes if needed)
+                    const validYouTubeToken = await getValidYouTubeToken(settings);
+                    
+                    if (validYouTubeToken) {
+                        setTitle(context, 'YT Chat');
                         
-                        // If specific channel ID is provided, filter by that channel
-                        if (settings.youtubeChannelId) {
-                            broadcastUrl += `&channelId=${settings.youtubeChannelId}`;
-                        }
-                        
-                        const broadcastResponse = await fetch(broadcastUrl);
-                        
-                        if (!broadcastResponse.ok) {
-                            setTitle(context, `YT ${broadcastResponse.status}`);
-                            setTimeout(() => setTitle(context, ''), 10000);
-                            return;
-                        }
-                        
-                        const broadcastData = await broadcastResponse.json();
-                        if (!broadcastData.items || broadcastData.items.length === 0) {
-                            setTitle(context, 'No YT Live');
-                            setTimeout(() => setTitle(context, ''), 5000);
-                            return;
-                        }
-                        
-                        const liveChatId = broadcastData.items[0].snippet.liveChatId;
-                        
-                        // Post message to YouTube chat
-                        const chatResponse = await fetch(`https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet&access_token=${settings.youtubeToken}`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                snippet: {
-                                    liveChatId: liveChatId,
-                                    type: 'textMessageEvent',
-                                    textMessageDetails: {
-                                        messageText: `${clipUrl}`
+                        try {
+                            // Get active live broadcasts for the TARGET channel (Ticklefitz)
+                            const broadcastUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${settings.youtubeChannelId}&eventType=live&type=video&access_token=${validYouTubeToken}`;
+                            
+                            const broadcastResponse = await fetch(broadcastUrl);
+                            
+                            if (!broadcastResponse.ok) {
+                                setTitle(context, `YT ${broadcastResponse.status}`);
+                                setTimeout(() => setTitle(context, ''), 10000);
+                                return;
+                            }
+                            
+                            const broadcastData = await broadcastResponse.json();
+                            if (!broadcastData.items || broadcastData.items.length === 0) {
+                                setTitle(context, 'No YT Live');
+                                setTimeout(() => setTitle(context, ''), 5000);
+                                return;
+                            }
+                            
+                            const videoId = broadcastData.items[0].id.videoId;
+                            
+                            // Get the live chat ID from the video
+                            const videoResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${videoId}&access_token=${validYouTubeToken}`);
+                            const videoData = await videoResponse.json();
+                            
+                            if (!videoData.items || !videoData.items[0].liveStreamingDetails || !videoData.items[0].liveStreamingDetails.activeLiveChatId) {
+                                setTitle(context, 'No Chat ID');
+                                setTimeout(() => setTitle(context, ''), 5000);
+                                return;
+                            }
+                            
+                            const liveChatId = videoData.items[0].liveStreamingDetails.activeLiveChatId;
+                            
+                            // Post message to YouTube chat
+                            const chatResponse = await fetch(`https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet&access_token=${validYouTubeToken}`, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    snippet: {
+                                        liveChatId: liveChatId,
+                                        type: 'textMessageEvent',
+                                        textMessageDetails: {
+                                            messageText: clipUrl
+                                        }
                                     }
-                                }
-                            })
-                        });
-                        
-                        if (!chatResponse.ok) {
-                            setTitle(context, `YT CH ${chatResponse.status}`);
+                                })
+                            });
+                            
+                            if (!chatResponse.ok) {
+                                setTitle(context, `YT CH ${chatResponse.status}`);
+                                setTimeout(() => setTitle(context, ''), 10000);
+                                return;
+                            }
+                            
+                            setTitle(context, 'All Posted!');
+                            setTimeout(() => setTitle(context, ''), 3000);
+                            
+                        } catch (error) {
+                            setTitle(context, 'YT Err');
                             setTimeout(() => setTitle(context, ''), 10000);
-                            return;
                         }
-                        
-                        setTitle(context, 'All Posted!');
-                        setTimeout(() => setTitle(context, ''), 3000);
-                        
-                    } catch (error) {
-                        setTitle(context, 'YT Err');
-                        setTimeout(() => setTitle(context, ''), 10000);
+                    } else {
+                        setTitle(context, 'YT No Token');
+                        setTimeout(() => setTitle(context, ''), 5000);
                     }
                 } else {
                     setTitle(context, 'TW Posted!');

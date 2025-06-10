@@ -35,7 +35,7 @@ Create Twitch clips instantly and automatically post them to multiple chat platf
    ```
 
 2. **Install the plugin**
-   - Copy `clipper-streamdeck.sdPlugin` folder to:
+   - Copy `TwitchClipper.sdPlugin` folder to:
      - **Windows:** `%APPDATA%\Elgato\StreamDeck\Plugins\`
      - **Mac:** `~/Library/Application Support/com.elgato.StreamDeck/Plugins/`
 
